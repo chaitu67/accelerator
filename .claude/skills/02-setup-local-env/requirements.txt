@@ -1,0 +1,4 @@
+# Python packages for the accelerator local environment.
+# One package per line (pip requirement spec syntax). Add more as the project grows,
+# then re-run the 02-setup-local-env skill to sync the venv.
+boto3
