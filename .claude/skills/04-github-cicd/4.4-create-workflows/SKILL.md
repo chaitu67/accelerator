@@ -66,27 +66,36 @@ exist; an existing file with either name is left untouched and reused as-is (sam
    `5.1-create-workspace` skill uses for its own local `deploy.sh`, so what gets approved is
    exactly what gets applied.
 
-## Gotcha: every required Terraform variable needs a matching TF_VAR_ line here
+## Convention: non-secret, per-deployment config goes in committed `*.auto.tfvars`, not TF_VAR_/repo variables
 
-CI has **no access** to the gitignored `terraform.tfvars` that `5.1-create-workspace`'s Phase 1
-writes locally (deliberately — that's the whole point of gitignoring it). Any variable in
-`infrastructure/` with no default (e.g. `databricks_account_id`, `new_workspace_name`,
-`new_workspace_deployment_name`, `new_workspace_root_bucket` from `workspace.tf`/
-`mws_provider.tf`) will make `terraform plan`/`apply` fail in CI with "No value for required
-variable" even though the AWS/Databricks auth steps succeed — this is a distinct failure mode
-from an auth problem, and it's easy to misdiagnose as one. Confirmed live: exactly this happened
-when validating this skill against a real deployment.
+CI has **no access** to the gitignored `terraform.tfvars` that Phase-1-style conversational
+steps write locally (deliberately — that's the whole point of gitignoring it). An earlier
+version of this project handled that by adding a `gh variable set` + a `TF_VAR_<name>: ${{
+vars.<NAME> }}` line per required variable (e.g. `databricks_account_id`, workspace
+name/region/bucket) — this worked, but meant every new variable, and every new *instance* of
+data using that variable (e.g. a second Databricks workspace), needed a matching edit to both
+workflow files plus a manual `gh variable set`. That's exactly the two real CI failures hit
+during this project's first workspace creation (a forgotten `TF_VAR_` line, and a value that had
+a default so it silently used the wrong one instead of erroring).
 
-Fix, for each such variable (assuming its value isn't secret — check the corresponding
-`terraform.tfvars` comment/description in `variables.tf` first):
-1. `gh variable set <NAME> --repo <owner/repo> --body "<value>"` (a plain repo variable, not a
-   secret — matches how `4.3` handles `DATABRICKS_HOST` etc.).
-2. Add `TF_VAR_<name>: ${{ vars.<NAME> }}` to the `env:` block of **both**
-   `terraform-plan.yml`'s and `terraform-apply.yml`'s `Terraform plan` step — missing either one
-   means that workflow fails while the other works, which is its own confusing symptom.
+**The fix, and the standing convention now:** if the data isn't secret (names, regions, bucket
+names, tiers, account IDs — anything already visible in a `terraform plan` or PR comment isn't
+secret), put it in a **committed** `*.auto.tfvars` or `*.auto.tfvars.json` file inside
+`infrastructure/` instead of a GitHub repo variable. Terraform auto-loads any `*.auto.tfvars*`
+file from its working directory automatically — locally **and** in CI, since CI checks out the
+whole repo — with zero `TF_VAR_*`, zero `gh variable set`, and zero workflow YAML edits, no
+matter how many such variables or deployment instances (e.g. workspaces) are added later. See
+`05-databricks-terraform-deployment/5.1-create-workspace`'s `account.auto.tfvars` /
+`workspaces.auto.tfvars` for the pattern in practice.
 
-If a value genuinely is secret, use `gh secret set` and `${{ secrets.<NAME> }}` instead, same
-pattern as the PAT/OAuth-M2M fallback paths in `4.3`.
+Reserve actual `TF_VAR_*`/repo-variable wiring in these workflow files for genuinely
+cross-cutting **CI identity plumbing** — `databricks_host`, `databricks_auth_type`,
+`databricks_client_id` — values that describe *how CI authenticates* and legitimately differ
+between a local run and a CI run. That set rarely changes and is already correctly wired in the
+scaffolded workflows; don't add to it for ordinary deployment data.
+
+If a value genuinely is secret (a token, a client secret), use `gh secret set` and `${{
+secrets.<NAME> }}` — never commit it, same pattern as the PAT/OAuth-M2M fallback paths in `4.3`.
 
 ## Constraints
 

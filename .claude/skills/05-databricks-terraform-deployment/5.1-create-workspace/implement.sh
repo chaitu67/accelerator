@@ -1,20 +1,19 @@
 #!/usr/bin/env bash
-# Idempotent scaffold of the Terraform resources that provision a NEW
-# Databricks-on-AWS workspace (Databricks-managed VPC): account-level
-# provider, cross-account IAM role, root S3 bucket, and the databricks_mws_*
-# resources tying them together. Never overwrites files that already exist.
-#
-# This only writes generic, reusable resource/variable definitions -- it
-# never writes actual values (workspace name, bucket name, account id) into
-# terraform.tfvars. Those come from the conversational "gather details" step
-# (see SKILL.md) and are filled in separately, since they're specific to one
-# deployment and involve a globally-unique bucket name.
+# Idempotent scaffold of the Terraform resources that provision Databricks-on-AWS
+# workspaces (Databricks-managed VPC): account-level provider, plus a reusable
+# modules/workspace module (cross-account IAM role, root S3 bucket, the
+# databricks_mws_* resources) instantiated via for_each over a `workspaces` map
+# variable. Never overwrites files that already exist -- this includes the
+# workspaces map itself: a brand-new workspace is added by editing the committed
+# workspaces.auto.tfvars directly (see SKILL.md Phase 1), not by this script,
+# same way actual values never came from this script before modularization.
 set -uo pipefail
 
 SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ACCELERATOR_ROOT="$(git -C "$SKILL_DIR" rev-parse --show-toplevel)"
 WORKSPACE_ROOT="$(dirname "$ACCELERATOR_ROOT")"
 INFRA_DIR="$WORKSPACE_ROOT/databricks/infrastructure"
+MODULE_DIR="$INFRA_DIR/modules/workspace"
 
 if [ ! -d "$INFRA_DIR" ]; then
   echo "Error: infrastructure/ not found at $INFRA_DIR" >&2
@@ -83,7 +82,7 @@ provider "databricks" {
 }
 
 variable "databricks_account_id" {
-  description = "Databricks account ID (Account Console > top right, or `cat ~/.databrickscfg` after any account-level login). Required to create a workspace."
+  description = "Databricks account ID (Account Console > top right, or `cat ~/.databrickscfg` after any account-level login). Required to create a workspace. Value lives in the committed account.auto.tfvars -- not secret, and CI needs it too."
   type        = string
 }
 
@@ -97,10 +96,76 @@ EOF
   WROTE_ANY=1
 fi
 
-if [ -f "$INFRA_DIR/workspace.tf" ]; then
-  echo "workspace.tf already exists -- reusing it as-is, not overwritten."
+if [ -d "$MODULE_DIR" ] && [ -f "$MODULE_DIR/main.tf" ]; then
+  echo "modules/workspace/ already exists -- reusing it as-is, not overwritten."
 else
-  cat > "$INFRA_DIR/workspace.tf" <<'EOF'
+  mkdir -p "$MODULE_DIR"
+
+  cat > "$MODULE_DIR/versions.tf" <<'EOF'
+terraform {
+  required_providers {
+    # configuration_aliases is mandatory here: it's what lets the root module
+    # pass its account-level `databricks.mws` provider instance into this
+    # module's `databricks.mws` references below.
+    databricks = {
+      source                = "databricks/databricks"
+      configuration_aliases = [databricks.mws]
+    }
+    aws = {
+      source = "hashicorp/aws"
+    }
+    time = {
+      source = "hashicorp/time"
+    }
+  }
+}
+EOF
+
+  cat > "$MODULE_DIR/variables.tf" <<'EOF'
+variable "databricks_account_id" {
+  description = "Databricks account ID (shared across all workspace instances of this module)."
+  type        = string
+}
+
+variable "display_name" {
+  description = "Human-readable name for the workspace (shown in the Account Console)."
+  type        = string
+}
+
+variable "deployment_name" {
+  description = "Naming prefix for this workspace's Databricks account-level resources (credentials/storage config names) -- not the URL. The actual workspace URL is auto-assigned by Databricks (see the workspace_url output) unless this account has a deployment name prefix configured, which most don't."
+  type        = string
+}
+
+variable "aws_region" {
+  description = "AWS region to deploy this workspace into."
+  type        = string
+}
+
+variable "root_bucket" {
+  description = "Name of the S3 bucket used as this workspace's DBFS root. Must be globally unique across ALL of S3, not just this AWS account."
+  type        = string
+}
+
+variable "root_bucket_force_destroy" {
+  description = "Allow `terraform destroy` to delete this bucket even if it still has objects in it. Defaults to false (AWS's own safe default); set true only for a disposable workshop/test workspace where losing the data on teardown is fine."
+  type        = bool
+  default     = false
+}
+
+variable "cross_account_role_name" {
+  description = "Name of the IAM role Databricks assumes to manage EC2/networking resources in this AWS account for this workspace."
+  type        = string
+}
+
+variable "pricing_tier" {
+  description = "Databricks pricing tier for this workspace: STANDARD, PREMIUM, or ENTERPRISE."
+  type        = string
+  default     = "PREMIUM"
+}
+EOF
+
+  cat > "$MODULE_DIR/main.tf" <<'EOF'
 # Provisions one new Databricks-on-AWS workspace with a Databricks-managed
 # VPC (Databricks creates and manages the VPC inside this AWS account --
 # no pre-existing VPC/subnets required). Customer-managed VPC is not
@@ -117,9 +182,9 @@ data "databricks_aws_assume_role_policy" "this" {
 }
 
 resource "aws_iam_role" "cross_account" {
-  name               = var.new_workspace_cross_account_role_name
+  name               = var.cross_account_role_name
   assume_role_policy = data.databricks_aws_assume_role_policy.this.json
-  tags               = { Name = var.new_workspace_cross_account_role_name }
+  tags               = { Name = var.cross_account_role_name }
 }
 
 data "databricks_aws_crossaccount_policy" "this" {
@@ -127,7 +192,7 @@ data "databricks_aws_crossaccount_policy" "this" {
 }
 
 resource "aws_iam_role_policy" "cross_account" {
-  name   = "${var.new_workspace_cross_account_role_name}-policy"
+  name   = "${var.cross_account_role_name}-policy"
   role   = aws_iam_role.cross_account.id
   policy = data.databricks_aws_crossaccount_policy.this.json
 }
@@ -142,8 +207,8 @@ resource "time_sleep" "iam_propagation" {
 }
 
 resource "aws_s3_bucket" "root_storage" {
-  bucket        = var.new_workspace_root_bucket
-  force_destroy = var.new_workspace_root_bucket_force_destroy
+  bucket        = var.root_bucket
+  force_destroy = var.root_bucket_force_destroy
 }
 
 resource "aws_s3_bucket_public_access_block" "root_storage" {
@@ -167,7 +232,7 @@ resource "aws_s3_bucket_policy" "root_storage" {
 resource "databricks_mws_credentials" "this" {
   provider         = databricks.mws
   account_id       = var.databricks_account_id
-  credentials_name = "${var.new_workspace_deployment_name}-credentials"
+  credentials_name = "${var.deployment_name}-credentials"
   role_arn         = aws_iam_role.cross_account.arn
   depends_on       = [time_sleep.iam_propagation]
 }
@@ -175,105 +240,126 @@ resource "databricks_mws_credentials" "this" {
 resource "databricks_mws_storage_configurations" "this" {
   provider                   = databricks.mws
   account_id                 = var.databricks_account_id
-  storage_configuration_name = "${var.new_workspace_deployment_name}-storage"
+  storage_configuration_name = "${var.deployment_name}-storage"
   bucket_name                = aws_s3_bucket.root_storage.bucket
 }
 
 resource "databricks_mws_workspaces" "this" {
   provider       = databricks.mws
   account_id     = var.databricks_account_id
-  workspace_name = var.new_workspace_name
-  aws_region     = var.new_workspace_aws_region
-  pricing_tier   = var.new_workspace_pricing_tier
+  workspace_name = var.display_name
+  aws_region     = var.aws_region
+  pricing_tier   = var.pricing_tier
   # deployment_name intentionally omitted: it errors with "Deployment name
   # cannot be used until a deployment name prefix is defined" on accounts
   # that don't have one configured (an account-level setting only Databricks
   # can set). Omitting it lets Databricks auto-assign the URL (the
   # dbc-<random>.cloud.databricks.com pattern) -- read it back from the
-  # new_workspace_url output after apply.
+  # workspace_url output after apply.
 
   credentials_id           = databricks_mws_credentials.this.credentials_id
   storage_configuration_id = databricks_mws_storage_configurations.this.storage_configuration_id
 
   depends_on = [aws_s3_bucket_policy.root_storage, aws_iam_role_policy.cross_account]
 }
+EOF
 
-variable "new_workspace_name" {
-  description = "Human-readable name for the new workspace (shown in the Account Console)."
-  type        = string
-}
-
-variable "new_workspace_deployment_name" {
-  description = "Naming prefix for this workspace's Databricks account-level resources (credentials/storage config names) -- not the URL. The actual workspace URL is auto-assigned by Databricks (see the new_workspace_url output) unless this account has a deployment name prefix configured, which most don't."
-  type        = string
-}
-
-variable "new_workspace_aws_region" {
-  description = "AWS region to deploy the new workspace into."
-  type        = string
-  default     = "us-east-1"
-}
-
-variable "new_workspace_root_bucket" {
-  description = "Name of the new S3 bucket used as the workspace's DBFS root. Must be globally unique across ALL of S3, not just this AWS account."
-  type        = string
-}
-
-variable "new_workspace_root_bucket_force_destroy" {
-  description = "Allow `terraform destroy` to delete this bucket even if it still has objects in it. Defaults to false (AWS's own safe default); set true only for a disposable workshop/test workspace where losing the data on teardown is fine."
-  type        = bool
-  default     = false
-}
-
-variable "new_workspace_cross_account_role_name" {
-  description = "Name of the IAM role Databricks assumes to manage EC2/networking resources in this AWS account for the new workspace."
-  type        = string
-  default     = "databricks-crossaccount-role"
-}
-
-variable "new_workspace_pricing_tier" {
-  description = "Databricks pricing tier for the new workspace: STANDARD, PREMIUM, or ENTERPRISE."
-  type        = string
-  default     = "PREMIUM"
-}
-
-output "new_workspace_url" {
-  description = "URL of the newly created workspace, once databricks_mws_workspaces reports RUNNING. Auto-assigned by Databricks (deployment_name is intentionally not set -- see workspace.tf)."
+  cat > "$MODULE_DIR/outputs.tf" <<'EOF'
+output "workspace_url" {
+  description = "URL of the workspace, once databricks_mws_workspaces reports RUNNING. Auto-assigned by Databricks (deployment_name is intentionally not set -- see main.tf)."
   value       = databricks_mws_workspaces.this.workspace_url
 }
 
-output "new_workspace_status" {
+output "workspace_status" {
   value = databricks_mws_workspaces.this.workspace_status
 }
+
+output "workspace_id" {
+  value = databricks_mws_workspaces.this.workspace_id
+}
 EOF
-  echo "Created $INFRA_DIR/workspace.tf"
+
+  echo "Created $MODULE_DIR/{versions,variables,main,outputs}.tf"
   WROTE_ANY=1
 fi
 
-MARKER="# --- 5.1-create-workspace example values ---"
-if grep -qF "$MARKER" "$INFRA_DIR/terraform.tfvars.example" 2>/dev/null; then
-  echo "terraform.tfvars.example already has 5.1-create-workspace example values."
+if [ -f "$INFRA_DIR/workspaces.tf" ]; then
+  echo "workspaces.tf already exists -- reusing it as-is, not overwritten."
 else
-  cat >> "$INFRA_DIR/terraform.tfvars.example" <<EOF
+  cat > "$INFRA_DIR/workspaces.tf" <<'EOF'
+# One Databricks-on-AWS workspace per entry in var.workspaces (see variables.tf) --
+# add a new workspace by adding an entry to the committed workspaces.auto.tfvars,
+# never by editing this file or any CI workflow.
+module "workspace" {
+  source   = "./modules/workspace"
+  for_each = var.workspaces
 
-$MARKER
-databricks_account_id                   = "<databricks-account-id-from-account-console>"
-databricks_account_profile              = "ACCOUNT"
-new_workspace_name                      = "my-new-workspace"
-new_workspace_deployment_name           = "my-new-workspace"
-new_workspace_aws_region                = "us-east-1"
-new_workspace_root_bucket               = "my-new-workspace-dbfs-root-<unique-suffix>"
-new_workspace_root_bucket_force_destroy = false
-new_workspace_cross_account_role_name   = "databricks-my-new-workspace-crossaccount"
-new_workspace_pricing_tier              = "PREMIUM"
+  providers = {
+    databricks.mws = databricks.mws
+  }
+
+  databricks_account_id     = var.databricks_account_id
+  display_name              = each.value.display_name
+  deployment_name           = coalesce(each.value.deployment_name, each.key)
+  aws_region                = coalesce(each.value.aws_region, var.aws_region)
+  root_bucket               = each.value.root_bucket
+  root_bucket_force_destroy = each.value.root_bucket_force_destroy
+  cross_account_role_name   = coalesce(each.value.cross_account_role_name, "databricks-${each.key}-crossaccount")
+  pricing_tier              = each.value.pricing_tier
+}
 EOF
-  echo "Appended example values to $INFRA_DIR/terraform.tfvars.example"
+  echo "Created $INFRA_DIR/workspaces.tf"
+  WROTE_ANY=1
+fi
+
+if grep -q '^variable "workspaces"' "$INFRA_DIR/variables.tf" 2>/dev/null; then
+  echo "variables.tf already declares the workspaces map -- not touched."
+else
+  cat >> "$INFRA_DIR/variables.tf" <<'EOF'
+
+variable "workspaces" {
+  description = "Map of Databricks workspaces to create, keyed by a short slug (used to default deployment_name/cross_account_role_name and as the module instance key). Values come from the committed workspaces.auto.tfvars -- add an entry there to provision a new workspace; no CI/workflow changes needed."
+  type = map(object({
+    display_name              = string
+    deployment_name           = optional(string)
+    aws_region                = optional(string)
+    root_bucket               = string
+    root_bucket_force_destroy = optional(bool, false)
+    cross_account_role_name   = optional(string)
+    pricing_tier              = optional(string, "PREMIUM")
+  }))
+  default = {}
+}
+EOF
+  echo "Appended the workspaces variable to $INFRA_DIR/variables.tf"
+  WROTE_ANY=1
+fi
+
+if grep -q '^output "workspace_urls"' "$INFRA_DIR/outputs.tf" 2>/dev/null; then
+  echo "outputs.tf already has the aggregated workspace outputs -- not touched."
+else
+  cat >> "$INFRA_DIR/outputs.tf" <<'EOF'
+
+output "workspace_urls" {
+  description = "Map of workspace slug -> workspace URL, for every entry in var.workspaces."
+  value       = { for k, m in module.workspace : k => m.workspace_url }
+}
+
+output "workspace_statuses" {
+  description = "Map of workspace slug -> workspace_status, for every entry in var.workspaces."
+  value       = { for k, m in module.workspace : k => m.workspace_status }
+}
+EOF
+  echo "Appended aggregated workspace outputs to $INFRA_DIR/outputs.tf"
   WROTE_ANY=1
 fi
 
 echo
 if [ "$WROTE_ANY" -eq 1 ]; then
-  echo "Workspace-creation resources scaffolded. Next: fill real values into terraform.tfvars (not committed to git), then run deploy.sh."
+  echo "Workspace module scaffolded. Next: add a real entry to the committed"
+  echo "workspaces.auto.tfvars (and account.auto.tfvars, first time only) per SKILL.md"
+  echo "Phase 1, then run deploy.sh."
 else
-  echo "Nothing to do -- all files already scaffolded."
+  echo "Nothing to do -- module and workspaces.tf already scaffolded. To add a workspace,"
+  echo "edit workspaces.auto.tfvars directly (Phase 1) -- this script has nothing left to do."
 fi

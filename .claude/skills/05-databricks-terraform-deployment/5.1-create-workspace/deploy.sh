@@ -25,17 +25,21 @@ for bin in terraform databricks aws; do
   command -v "$bin" >/dev/null 2>&1 || { echo "$bin not on PATH -> run the 02-setup-local-env skill first." >&2; exit 1; }
 done
 
-if [ ! -f "$INFRA_DIR/workspace.tf" ]; then
-  echo "workspace.tf not found in $INFRA_DIR -> run implement.sh in this skill first." >&2
+if [ ! -f "$INFRA_DIR/modules/workspace/main.tf" ]; then
+  echo "modules/workspace/main.tf not found in $INFRA_DIR -> run implement.sh in this skill first." >&2
   exit 1
 fi
-if [ ! -f "$INFRA_DIR/terraform.tfvars" ]; then
-  echo "terraform.tfvars not found -> fill in the new_workspace_*/databricks_account_* variables first (see terraform.tfvars.example)." >&2
+if [ ! -f "$INFRA_DIR/workspaces.auto.tfvars" ]; then
+  echo "workspaces.auto.tfvars not found -> add at least one workspace entry first (see SKILL.md Phase 1)." >&2
   exit 1
 fi
 
+# databricks_account_id lives in the committed account.auto.tfvars (shared, not secret);
+# databricks_account_profile is a local-only preference and may still be in the gitignored
+# terraform.tfvars. Check both, preferring whichever is actually set.
 tfvar() {
-  grep -E "^$1" "$INFRA_DIR/terraform.tfvars" 2>/dev/null | sed -E "s/^$1[[:space:]]*=[[:space:]]*\"([^\"]*)\".*/\1/"
+  grep -hE "^$1" "$INFRA_DIR/account.auto.tfvars" "$INFRA_DIR/terraform.tfvars" 2>/dev/null \
+    | head -1 | sed -E "s/^$1[[:space:]]*=[[:space:]]*\"([^\"]*)\".*/\1/"
 }
 
 ACCOUNT_ID="$(tfvar databricks_account_id)"
@@ -43,7 +47,7 @@ ACCOUNT_PROFILE="$(tfvar databricks_account_profile)"
 [ -z "$ACCOUNT_PROFILE" ] && ACCOUNT_PROFILE="ACCOUNT"
 
 if [ -z "$ACCOUNT_ID" ]; then
-  echo "databricks_account_id is not set in terraform.tfvars -> get it from the Account Console (top right) and set it first." >&2
+  echo "databricks_account_id is not set in account.auto.tfvars -> get it from the Account Console (top right) and set it first." >&2
   exit 1
 fi
 
@@ -62,13 +66,17 @@ else
   fi
 fi
 
-BUCKET="$(tfvar new_workspace_root_bucket)"
-if [ -n "$BUCKET" ] && aws s3api head-bucket --bucket "$BUCKET" >/dev/null 2>&1; then
-  echo
-  echo "WARNING: S3 bucket '$BUCKET' already exists and is reachable with your AWS credentials." >&2
-  echo "S3 bucket names are globally unique across ALL AWS accounts -- if apply fails with a" >&2
-  echo "'BucketAlreadyExists' error, pick a different new_workspace_root_bucket value." >&2
-fi
+# Check every workspace's root_bucket (workspaces.auto.tfvars can define more than one).
+BUCKETS="$(grep -oE 'root_bucket[[:space:]]*=[[:space:]]*"[^"]+"' "$INFRA_DIR/workspaces.auto.tfvars" 2>/dev/null \
+  | sed -E 's/^root_bucket[[:space:]]*=[[:space:]]*"([^"]+)"$/\1/')"
+for BUCKET in $BUCKETS; do
+  if aws s3api head-bucket --bucket "$BUCKET" >/dev/null 2>&1; then
+    echo
+    echo "WARNING: S3 bucket '$BUCKET' already exists and is reachable with your AWS credentials." >&2
+    echo "S3 bucket names are globally unique across ALL AWS accounts -- if apply fails with a" >&2
+    echo "'BucketAlreadyExists' error, pick a different root_bucket value for that workspace." >&2
+  fi
+done
 
 cd "$INFRA_DIR"
 echo
@@ -108,7 +116,7 @@ else
     terraform output
     echo
     echo "Workspace creation can take several minutes after apply reports success --" \
-         "check new_workspace_status above, or the Account Console, until it's RUNNING."
+         "check workspace_statuses above, or the Account Console, until it's RUNNING."
   else
     echo
     echo "terraform apply failed (see errors above). Any resources it did create are safely" >&2

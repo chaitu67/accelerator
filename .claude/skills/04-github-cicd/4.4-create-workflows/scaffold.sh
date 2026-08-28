@@ -76,21 +76,29 @@ jobs:
           TF_VAR_databricks_host: ${{ vars.DATABRICKS_HOST }}
           TF_VAR_databricks_auth_type: github-oidc
           TF_VAR_databricks_client_id: ${{ vars.DATABRICKS_CLIENT_ID }}
-          TF_VAR_databricks_account_id: ${{ vars.DATABRICKS_ACCOUNT_ID }}
-          TF_VAR_new_workspace_name: ${{ vars.NEW_WORKSPACE_NAME }}
-          TF_VAR_new_workspace_deployment_name: ${{ vars.NEW_WORKSPACE_DEPLOYMENT_NAME }}
-          TF_VAR_new_workspace_root_bucket: ${{ vars.NEW_WORKSPACE_ROOT_BUCKET }}
-          TF_VAR_new_workspace_cross_account_role_name: ${{ vars.NEW_WORKSPACE_CROSS_ACCOUNT_ROLE_NAME }}
+          # Non-secret, per-deployment config (account IDs, workspace names/regions/buckets,
+          # etc.) should NOT be added here as TF_VAR_*/repo variables -- put it in a committed
+          # *.auto.tfvars/*.auto.tfvars.json file instead. Terraform auto-loads those from the
+          # checked-out repo, locally and in CI, with zero workflow edits ever needed again.
+          # Reserve this env block for genuinely cross-cutting CI identity plumbing (how CI
+          # authenticates), which legitimately differs per environment.
         run: terraform plan -input=false -no-color
         continue-on-error: true
 
       - name: Post plan output as PR comment
         uses: actions/github-script@v7
+        env:
+          # Pass the plan text through an env var rather than interpolating
+          # `${{ steps.plan.outputs.stdout }}` directly into the JS template literal below --
+          # Terraform plan output for IAM policy resources routinely contains literal
+          # `${aws:...}` policy-variable syntax, which breaks the JS parser
+          # ("Unexpected identifier") if substituted straight into the template string.
+          PLAN: ${{ steps.plan.outputs.stdout }}
         with:
           script: |
             const output = `#### Terraform Plan
             \`\`\`
-            ${{ steps.plan.outputs.stdout }}
+            ${process.env.PLAN}
             \`\`\``;
             github.rest.issues.createComment({
               issue_number: context.issue.number,
@@ -156,11 +164,8 @@ jobs:
           TF_VAR_databricks_host: ${{ vars.DATABRICKS_HOST }}
           TF_VAR_databricks_auth_type: github-oidc
           TF_VAR_databricks_client_id: ${{ vars.DATABRICKS_CLIENT_ID }}
-          TF_VAR_databricks_account_id: ${{ vars.DATABRICKS_ACCOUNT_ID }}
-          TF_VAR_new_workspace_name: ${{ vars.NEW_WORKSPACE_NAME }}
-          TF_VAR_new_workspace_deployment_name: ${{ vars.NEW_WORKSPACE_DEPLOYMENT_NAME }}
-          TF_VAR_new_workspace_root_bucket: ${{ vars.NEW_WORKSPACE_ROOT_BUCKET }}
-          TF_VAR_new_workspace_cross_account_role_name: ${{ vars.NEW_WORKSPACE_CROSS_ACCOUNT_ROLE_NAME }}
+          # See the matching comment in terraform-plan.yml -- non-secret, per-deployment
+          # config belongs in a committed *.auto.tfvars file, not here.
         run: terraform plan -input=false -out=tfplan
 
       - name: Terraform apply (the plan just produced, nothing else)

@@ -31,10 +31,12 @@ Renumbering this as `05`, run *after* `04-github-cicd`, means:
 
 ## Skills in this group
 
-- `5.1-create-workspace` — provisions a brand-new Databricks-on-AWS workspace
-  (Databricks-managed VPC) via Terraform: gather details, implement (scaffold the
-  `mws_*`/IAM/S3 resources), deploy (plan → review → apply, either locally or through the
-  `04-github-cicd` pipeline).
+- `5.1-create-workspace` — provisions Databricks-on-AWS workspaces (Databricks-managed VPC) via
+  a shared `modules/workspace` Terraform module, instantiated per-workspace from a committed
+  `workspaces.auto.tfvars` map: gather details, implement (scaffold the module — a no-op after
+  the first workspace), deploy (plan → review → apply, either locally or through the
+  `04-github-cicd` pipeline). Adding workspace #2+ is a single edit to that committed file —
+  never a CI workflow or GitHub repo variable change.
 
 ## Before running anything in this group
 
