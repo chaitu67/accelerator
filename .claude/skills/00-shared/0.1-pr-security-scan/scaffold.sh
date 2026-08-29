@@ -58,7 +58,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Trivy scan (full report, all severities)
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: fs
           scanners: vuln,secret,misconfig
@@ -93,7 +93,7 @@ jobs:
 
       - name: Trivy scan (gate on CRITICAL/HIGH only)
         id: gate
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.36.0
         continue-on-error: true
         with:
           scan-type: fs
