@@ -37,6 +37,11 @@ Renumbering this as `05`, run *after* `04-github-cicd`, means:
   the first workspace), deploy (plan → review → apply, either locally or through the
   `04-github-cicd` pipeline). Adding workspace #2+ is a single edit to that committed file —
   never a CI workflow or GitHub repo variable change.
+- `5.2-create-unity-catalog` — creates Unity Catalog catalogs (with schemas) backed by external
+  S3 storage, via a shared `modules/catalog` module instantiated per-catalog from a committed
+  `catalogs.auto.tfvars` map — same standing pattern as `5.1`, but workspace-scoped (plain
+  default `databricks` provider) rather than account-scoped, and assumes a metastore already
+  exists/is assigned rather than creating one.
 
 ## Before running anything in this group
 
