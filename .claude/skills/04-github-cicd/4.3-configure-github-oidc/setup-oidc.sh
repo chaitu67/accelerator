@@ -115,13 +115,19 @@ echo
 echo "== Inline policy: terraform-backend-and-infra =="
 # Scoped to what infrastructure/'s current resources need: the remote state
 # backend (S3 + DynamoDB from 4.2-setup-remote-backend) and the AWS resource
-# types workspace.tf manages (IAM role/policy, S3 bucket for DBFS root).
-# Resource names for the *workspace's own* IAM role / S3 bucket aren't known
-# ahead of time (they're user-chosen per deployment in terraform.tfvars), so
-# those actions are scoped by service+action rather than a specific ARN --
-# still far narrower than AdministratorAccess. Re-run this script after
-# infrastructure/ grows new AWS resource types that need permissions not
-# listed here.
+# types modules/workspace and modules/catalog manage (IAM role/policy, S3
+# buckets for the workspace DBFS root and per-catalog Unity Catalog storage).
+# Resource names for these buckets/roles aren't known ahead of time (they're
+# user-chosen per deployment in workspaces.auto.tfvars/catalogs.auto.tfvars),
+# so those actions are scoped by service+action and a naming-convention
+# wildcard rather than a specific ARN -- still far narrower than
+# AdministratorAccess. Re-run this script after infrastructure/ grows new AWS
+# resource types (or new bucket-naming conventions) that need permissions not
+# listed here -- confirmed missing once already: the Unity Catalog module's
+# `*-uc-storage-*` buckets weren't covered until this comment/statement was
+# added, so a real catalog apply through CI would have failed with
+# AccessDenied on s3:CreateBucket despite working fine locally (local runs use
+# a broader personal AWS profile, not this scoped role).
 STATE_BUCKET=""
 STATE_TABLE=""
 STATE_REGION=""
@@ -200,6 +206,21 @@ INFRA_STATEMENTS='[
     "Effect": "Allow",
     "Action": ["s3:Get*", "s3:List*"],
     "Resource": ["arn:aws:s3:::*dbfs-root*", "arn:aws:s3:::*dbfs-root*/*"]
+  },
+  {
+    "Sid": "CatalogStorageBucket",
+    "Effect": "Allow",
+    "Action": [
+      "s3:CreateBucket", "s3:DeleteBucket", "s3:PutBucketPolicy",
+      "s3:PutBucketPublicAccessBlock", "s3:PutBucketVersioning", "s3:PutEncryptionConfiguration"
+    ],
+    "Resource": "arn:aws:s3:::*uc-storage*"
+  },
+  {
+    "Sid": "CatalogStorageBucketRead",
+    "Effect": "Allow",
+    "Action": ["s3:Get*", "s3:List*"],
+    "Resource": ["arn:aws:s3:::*uc-storage*", "arn:aws:s3:::*uc-storage*/*"]
   }
 ]'
 
