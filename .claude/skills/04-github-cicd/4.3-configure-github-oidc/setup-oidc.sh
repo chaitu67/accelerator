@@ -11,10 +11,12 @@ WORKSPACE_ROOT="$(dirname "$ACCELERATOR_ROOT")"
 INFRA_DIR="$WORKSPACE_ROOT/databricks/infrastructure"
 
 REPO_SLUG="${1:-}"
-APPLY_BRANCH="${2:-main}"
+APPLY_ENVIRONMENT="${2:-production}"
 
 if [ -z "$REPO_SLUG" ]; then
-  echo "Usage: setup-oidc.sh <owner/repo> [allowed-apply-branch]" >&2
+  echo "Usage: setup-oidc.sh <owner/repo> [apply-environment-name]" >&2
+  echo "  apply-environment-name must match terraform-apply.yml's job-level 'environment:'" >&2
+  echo "  value (default \"production\") -- see 4.4-create-workflows." >&2
   exit 1
 fi
 
@@ -44,7 +46,7 @@ else
 fi
 
 echo
-echo "== IAM role: $ROLE_NAME (trusts only repo:$REPO_SLUG) =="
+echo "== IAM role: $ROLE_NAME (trusts only repo:$REPO_SLUG, pull_request or environment:$APPLY_ENVIRONMENT) =="
 # GitHub's actual `sub` claim now embeds immutable owner/repo IDs by default --
 # e.g. "repo:my-org@12345/my-repo@67890:pull_request", not the plain
 # "repo:my-org/my-repo:pull_request" older docs/examples show. Confirmed via
@@ -54,6 +56,21 @@ echo "== IAM role: $ROLE_NAME (trusts only repo:$REPO_SLUG) =="
 # CloudTrail's recorded `userIdentity.userName` is what actually reveals the
 # real subject string. Trusting both forms is defense in depth in case a
 # repo/org ever has immutable-ID subjects disabled.
+#
+# Scoped to exactly the two subjects this repo's workflows ever actually
+# present, rather than a blanket "repo:<slug>:*" wildcard (which would also
+# trust workflow_dispatch, schedule, push to any other branch, any other
+# environment, etc. -- none of which are used, but all of which a wildcard
+# would still permit). Confirmed via CloudTrail against every historical
+# AssumeRoleWithWebIdentity call from this repo: only ":pull_request" (from
+# terraform-plan.yml / security-scan.yml) and ":environment:$APPLY_ENVIRONMENT"
+# (from terraform-apply.yml's job-level `environment:` -- GitHub's OIDC
+# subject reflects the environment name, not the ref, whenever a job
+# specifies one) have ever appeared. If a workflow ever needs a genuinely new
+# trigger context (a new environment name, a manually-dispatched workflow,
+# etc.), that subject needs to be added here explicitly -- it will otherwise
+# fail auth the same way a typo'd repo slug would, with the CloudTrail
+# diagnostic approach above being how to confirm the real subject to add.
 if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
   OWNER_NAME="${REPO_SLUG%%/*}"
   REPO_NAME_ONLY="${REPO_SLUG##*/}"
@@ -61,16 +78,22 @@ if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
   REPO_ID="$(gh api "repos/$REPO_SLUG" --jq .id 2>/dev/null || true)"
 fi
 
+PLAIN_SUBJECTS="[\"repo:${REPO_SLUG}:pull_request\", \"repo:${REPO_SLUG}:environment:${APPLY_ENVIRONMENT}\"]"
 if [ -n "${OWNER_ID:-}" ] && [ -n "${REPO_ID:-}" ]; then
-  SUB_IMMUTABLE="repo:${OWNER_NAME}@${OWNER_ID}/${REPO_NAME_ONLY}@${REPO_ID}:*"
-  echo "resolved immutable IDs -- trusting subject '$SUB_IMMUTABLE' (and the plain form, as a fallback)."
-  SUB_CONDITION="[\"repo:${REPO_SLUG}:*\", \"${SUB_IMMUTABLE}\"]"
+  IMMUTABLE_PREFIX="repo:${OWNER_NAME}@${OWNER_ID}/${REPO_NAME_ONLY}@${REPO_ID}"
+  echo "resolved immutable IDs -- trusting pull_request + environment:$APPLY_ENVIRONMENT subjects (plain and immutable-ID forms)."
+  SUB_CONDITION="$(python3 -c "
+import json
+plain = json.loads('''$PLAIN_SUBJECTS''')
+immutable = ['${IMMUTABLE_PREFIX}:pull_request', '${IMMUTABLE_PREFIX}:environment:${APPLY_ENVIRONMENT}']
+print(json.dumps(plain + immutable))
+")"
 else
   echo "Warning: could not resolve owner/repo numeric IDs via gh -- trusting only the plain" >&2
-  echo "'repo:${REPO_SLUG}:*' subject form. If GitHub Actions runs default to immutable-ID" >&2
-  echo "subjects for this repo, AssumeRoleWithWebIdentity will fail; re-run this script once" >&2
-  echo "gh is authenticated to add the immutable-ID form too." >&2
-  SUB_CONDITION="\"repo:${REPO_SLUG}:*\""
+  echo "subject forms. If GitHub Actions runs default to immutable-ID subjects for this repo," >&2
+  echo "AssumeRoleWithWebIdentity will fail; re-run this script once gh is authenticated to add" >&2
+  echo "the immutable-ID forms too." >&2
+  SUB_CONDITION="$PLAIN_SUBJECTS"
 fi
 
 TRUST_POLICY="$(cat <<EOF
@@ -82,8 +105,10 @@ TRUST_POLICY="$(cat <<EOF
       "Principal": { "Federated": "$OIDC_PROVIDER_ARN" },
       "Action": "sts:AssumeRoleWithWebIdentity",
       "Condition": {
-        "StringEquals": { "${OIDC_HOST}:aud": "sts.amazonaws.com" },
-        "StringLike": { "${OIDC_HOST}:sub": $SUB_CONDITION }
+        "StringEquals": {
+          "${OIDC_HOST}:aud": "sts.amazonaws.com",
+          "${OIDC_HOST}:sub": $SUB_CONDITION
+        }
       }
     }
   ]
@@ -104,12 +129,14 @@ fi
 
 ROLE_ARN="$(aws iam get-role --role-name "$ROLE_NAME" --query 'Role.Arn' --output text)"
 
-# Note: apply-vs-plan branch restriction (the $APPLY_BRANCH argument) is
-# enforced in the workflow files (4.4-create-workflows), not the IAM trust
-# policy -- the trust policy allows the whole repo (any branch/PR) to assume
-# the role so plan can run on every PR; the apply workflow's own job-level
-# `if: github.ref == 'refs/heads/$APPLY_BRANCH'` is what actually gates apply.
-echo "(apply is restricted to the '$APPLY_BRANCH' branch at the workflow level, not IAM -- see 4.4-create-workflows)"
+# Apply is now gated at two independent layers: the workflow file itself
+# (terraform-apply.yml only triggers on `push` to `main`, and its job
+# specifies `environment: $APPLY_ENVIRONMENT`), and this IAM trust policy
+# (only trusts the `environment:$APPLY_ENVIRONMENT` subject, not an arbitrary
+# ref/branch). Plan is gated only by the workflow trigger (`pull_request`,
+# any branch) -- there's no IAM-level branch restriction for plan, since
+# reviewers need a plan on every PR regardless of source branch.
+echo "(apply is scoped to the '$APPLY_ENVIRONMENT' environment at both the workflow level and the IAM trust policy)"
 
 echo
 echo "== Inline policy: terraform-backend-and-infra =="

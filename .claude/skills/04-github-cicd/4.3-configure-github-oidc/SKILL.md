@@ -80,7 +80,7 @@ account-admin territory, not workspace-level.
 ## Phase 2: AWS OIDC + role
 
 ```
-bash .claude/skills/04-github-cicd/4.3-configure-github-oidc/setup-oidc.sh <owner/repo> [allowed-apply-branch]
+bash .claude/skills/04-github-cicd/4.3-configure-github-oidc/setup-oidc.sh <owner/repo> [apply-environment-name]
 ```
 
 Idempotent:
@@ -89,8 +89,16 @@ Idempotent:
   doesn't already exist (reused across every repo that wants GitHub Actions OIDC in this
   account — not recreated per-repo).
 - Creates IAM role `github-actions-<repo-name>-terraform` if it doesn't exist, with a trust
-  policy scoped to `repo:<owner>/<repo>:*` (covers both PR and branch-push events for this repo
-  only — no other repo, fork, or AWS account can assume it).
+  policy scoped to exactly the two subjects this repo's workflows ever present —
+  `repo:<owner>/<repo>:pull_request` (for `terraform-plan.yml`) and
+  `repo:<owner>/<repo>:environment:<apply-environment-name>` (for `terraform-apply.yml`'s
+  job-level `environment:`, default `production`) — not a `repo:<owner>/<repo>:*` wildcard. This
+  now matches the Databricks federation side's precision (see Phase 3) rather than being the
+  broader of the two; confirmed empirically via CloudTrail against every historical
+  `AssumeRoleWithWebIdentity` call for this repo before narrowing it. If a workflow ever needs a
+  genuinely new trigger context (a new environment name, `workflow_dispatch`, etc.), re-run this
+  script with the new environment name, or extend the subject list directly — it will otherwise
+  fail auth the same way a typo'd repo slug would.
 - Attaches an inline policy granting the permissions the `infrastructure/` project's resources
   need: read/write on the S3 state bucket (plus the DynamoDB lock table, only if `4.2` was
   configured with one instead of S3-native locking), and the IAM/S3-adjacent AWS actions the
