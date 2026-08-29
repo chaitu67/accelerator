@@ -60,8 +60,19 @@ one conversation, or a group can be created now with grants added later (or vice
 group already exists) — same "edit the committed tfvars again" idiom as `5.1`/`5.2`.
 
 **For each group:**
-- **A short group slug** (e.g. `data-engineers`) — used as the `groups` map key and the group's
-  account-level display name.
+- **Is this group for development or production?** Sets the entry's `environment` field
+  (`dev` | `stg` | `prod`). This determines whether the group name below is pattern-enforced.
+- **A short group slug.** For `environment = "dev"` (or `stg`), any name works — e.g.
+  `data-engineers`. For `environment = "prod"`, the name **must** follow
+  `databricks/docs/naming-conventions.md`'s group pattern:
+  `acl_<env>_<domain>[_<subdomain>]_<role>` (e.g. `acl_prod_analytics_reader`,
+  `acl_prod_sales_events_writer`) — enforced by a Terraform `validation` block on `var.groups`,
+  so a non-matching prod name fails at `terraform plan`, not just in this conversation. The
+  leading `acl_` is deliberate: it's a reserved vocabulary slot (alongside `sp`/`abac` for
+  not-yet-built capabilities — see the naming doc) that marks this as an object-level-grant
+  group specifically, not a stand-in for "any Databricks group." Don't silently rename what the
+  user asked for to make it compliant — show them the pattern and ask for a compliant name
+  instead.
 - **Member emails** — existing Databricks account users only; this skill doesn't create users.
   Confirm each email is a real account user before writing it in (a typo silently fails at
   `apply` with a "user not found" error from the `databricks_user` data source).
@@ -156,3 +167,11 @@ at any point, for any number of groups or grants.
 - Each `catalog_grants` entry targets exactly one catalog or one schema (never both at once) —
   `databricks_grants` takes exactly one securable argument; a group needing both catalog-level
   and schema-level privileges gets two separate map entries.
+- Never accepts a non-compliant name for a `prod` group and proceeds anyway — the Terraform
+  `validation` block on `var.groups` will reject it at `plan` time regardless. See
+  `databricks/docs/naming-conventions.md`.
+- Never repurposes the `sp`/`abac` naming-convention prefixes as if they were implemented — they
+  are reserved vocabulary only. If a user asks for a service-principal-membership group or an
+  attribute/tag-based access group, say plainly that this skill only builds `acl`-type (human,
+  object-level-grant) groups today, rather than forcing the request through `modules/group` as a
+  workaround.

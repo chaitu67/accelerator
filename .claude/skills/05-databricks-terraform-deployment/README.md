@@ -50,6 +50,16 @@ Renumbering this as `05`, run *after* `04-github-cicd`, means:
   `5.1`), grants are workspace-scoped (like `5.2`). Does not grant workspace login access itself
   — see its SKILL.md "Known gap."
 
+## Naming conventions (catalogs and groups)
+
+`5.2` and `5.3` both enforce an enterprise naming convention for `environment = "prod"`
+catalogs/groups, via real Terraform `validation` blocks on `var.catalogs`/`var.groups` in
+`databricks/infrastructure/variables.tf` (not just conversational discipline) — `dev`/`stg`
+entries are never restricted. The canonical definition, including the group-type vocabulary
+(`acl` implemented, `sp`/`abac` reserved for capabilities not yet built) lives in
+`databricks/docs/naming-conventions.md` — read it before running `5.2`'s or `5.3`'s Phase 1 for
+a `prod` entry.
+
 ## Before running anything in this group
 
 Confirm `3.2-check-prerequisites` (base Terraform environment) **and**

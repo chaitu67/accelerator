@@ -233,8 +233,9 @@ else
   cat >> "$INFRA_DIR/variables.tf" <<'EOF'
 
 variable "catalogs" {
-  description = "Map of Unity Catalog catalogs to create, keyed by a short slug (the catalog name and the module instance key). Values come from the committed catalogs.auto.tfvars -- add an entry there to provision a new catalog; no CI/workflow changes needed. Each catalog gets its own dedicated S3 bucket + IAM role + storage credential + external location."
+  description = "Map of Unity Catalog catalogs to create, keyed by a short slug (the catalog name and the module instance key). Values come from the committed catalogs.auto.tfvars -- add an entry there to provision a new catalog; no CI/workflow changes needed. Each catalog gets its own dedicated S3 bucket + IAM role + storage credential + external location. See docs/naming-conventions.md: for environment = \"prod\" entries, the map key must match <env>_<domain>[_<subdomain>] (e.g. prod_analytics) -- dev/stg keys are unrestricted."
   type = map(object({
+    environment                  = optional(string, "dev")
     comment                      = optional(string)
     bucket_name                  = string
     bucket_force_destroy         = optional(bool, false)
@@ -242,6 +243,24 @@ variable "catalogs" {
     schemas                      = optional(list(string), [])
   }))
   default = {}
+
+  validation {
+    condition = alltrue([
+      for k, v in var.catalogs : contains(["dev", "stg", "prod"], v.environment)
+    ])
+    error_message = "Each catalog's environment must be \"dev\", \"stg\", or \"prod\"."
+  }
+
+  validation {
+    # Naming pattern only enforced for prod -- see docs/naming-conventions.md.
+    condition = alltrue([
+      for k, v in var.catalogs : (
+        v.environment != "prod" ||
+        can(regex("^(dev|stg|prod)_[a-z][a-z0-9]*(_[a-z][a-z0-9]*)*$", k))
+      )
+    ])
+    error_message = "Catalog keys with environment = \"prod\" must match <env>_<domain>[_<subdomain>] (e.g. prod_analytics) -- see docs/naming-conventions.md."
+  }
 }
 EOF
   echo "Appended the catalogs variable to $INFRA_DIR/variables.tf"

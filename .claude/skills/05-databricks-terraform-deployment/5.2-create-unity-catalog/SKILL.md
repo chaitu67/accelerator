@@ -78,8 +78,15 @@ Ask the user for these before touching any file:
     how many workspaces exist). Catalogs across two *different* workspaces in the same Terraform
     state would need a distinct, manually-added aliased `databricks` provider per workspace —
     that's a real design change, not something Phase 1's conversation can paper over.
-- **A short catalog slug/name** (e.g. `analytics`) — used as the `catalogs` map key and the
-  actual catalog name.
+- **Is this catalog for development or production?** Sets the entry's `environment` field
+  (`dev` | `stg` | `prod`). This determines whether the catalog name below is pattern-enforced.
+- **A short catalog slug/name.** For `environment = "dev"` (or `stg`), any name works — e.g.
+  `analytics`. For `environment = "prod"`, the name **must** follow
+  `../../../../databricks/docs/naming-conventions.md`'s catalog pattern:
+  `<env>_<domain>[_<subdomain>]` (e.g. `prod_analytics`, `prod_sales_events`) — this is enforced
+  by a Terraform `validation` block on `var.catalogs`, so a non-matching prod name fails at
+  `terraform plan`, not just in this conversation. Don't silently rename what the user asked for
+  to make it compliant — show them the pattern and ask for a compliant name instead.
 - **Comment** (optional) describing the catalog's purpose.
 - **Root S3 bucket name** for this catalog's external storage — must be globally unique across
   **all of S3**. Suggest `<catalog-slug>-uc-storage-<random-suffix>` and confirm.
@@ -183,3 +190,6 @@ recreated.
   credential across catalogs) — matches `modules/workspace`'s self-containment. If the user
   wants a shared credential/bucket across multiple catalogs later, that's a variation to design
   separately, not this module's default behavior.
+- Never accepts a non-compliant name for a `prod` catalog and proceeds anyway — the Terraform
+  `validation` block on `var.catalogs` will reject it at `plan` time regardless, so catching it
+  in Phase 1 just saves a round trip. See `databricks/docs/naming-conventions.md`.
