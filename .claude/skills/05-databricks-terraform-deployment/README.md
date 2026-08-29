@@ -49,6 +49,12 @@ Renumbering this as `05`, run *after* `04-github-cicd`, means:
   `catalog_access.auto.tfvars` map. Mixes both provider scopes: groups are account-scoped (like
   `5.1`), grants are workspace-scoped (like `5.2`). Does not grant workspace login access itself
   — see its SKILL.md "Known gap."
+- `5.4-create-volume` — creates Unity Catalog volumes (MANAGED or EXTERNAL) inside an existing
+  catalog/schema (from `5.2`), via a shared `modules/volume` module instantiated per-volume from a
+  committed `volumes.auto.tfvars` map. Workspace-scoped, same as `5.2`. EXTERNAL volumes default
+  their storage location to a subpath under their own catalog's existing external location, rather
+  than provisioning a new bucket/IAM role/external location per volume. Does not grant anyone
+  read/write access to the volume itself — see its SKILL.md "Known gap."
 
 ## Naming conventions (catalogs and groups)
 
