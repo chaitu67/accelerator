@@ -35,8 +35,17 @@ if [ ! -f "$INFRA_DIR/catalogs.auto.tfvars" ]; then
   exit 1
 fi
 
-echo "== Checking workspace-level Databricks authentication =="
-if ! databricks current-user me >/dev/null 2>&1; then
+# databricks_profile is a local-only preference in the gitignored terraform.tfvars (defaults to
+# "DEFAULT", matching the root module's own variable default) -- must check auth against this
+# SAME profile Terraform's default provider actually uses, not whatever profile the bare
+# `databricks` CLI would otherwise resolve on its own (which can differ and silently fail here
+# even when the real target profile is fine).
+WORKSPACE_PROFILE="$(grep -hE '^databricks_profile' "$INFRA_DIR/terraform.tfvars" 2>/dev/null \
+  | head -1 | sed -E 's/^databricks_profile[[:space:]]*=[[:space:]]*"([^"]*)".*/\1/')"
+[ -z "$WORKSPACE_PROFILE" ] && WORKSPACE_PROFILE="DEFAULT"
+
+echo "== Checking workspace-level Databricks authentication (profile: $WORKSPACE_PROFILE) =="
+if ! databricks current-user me --profile "$WORKSPACE_PROFILE" >/dev/null 2>&1; then
   echo "Not authenticated (or the configured profile/host can't reach the target workspace)." >&2
   echo "Run the 3.2.2-authenticate-databricks skill, and confirm databricks_host/databricks_profile" >&2
   echo "in terraform.tfvars actually point at the workspace you want these catalogs created in." >&2
