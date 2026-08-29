@@ -13,6 +13,12 @@ life, or be dropped into a completely different project unchanged.
   (secrets, IaC misconfiguration, dependency vulnerabilities) on every pull request, in any repo,
   regardless of what changed. Posts results as a PR comment; fails the check only on
   CRITICAL/HIGH severity findings.
+- `0.2-security-audit` — runs an on-demand or scheduled deep security audit of a whole target
+  repo (GitHub platform settings, secrets, IaC, Actions hygiene, cloud hardening where
+  applicable) and scores it 0-100 against a fixed severity-weighted rubric. Complements `0.1`
+  (which only covers CI-gated PR diffs) rather than replacing it. Every run is saved as a new
+  dated exemplar in `0.2-security-audit/exemplars/`, which also doubles as the style guide for
+  writing the next report.
 
 ## Convention
 
