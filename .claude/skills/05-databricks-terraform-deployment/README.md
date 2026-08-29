@@ -42,6 +42,13 @@ Renumbering this as `05`, run *after* `04-github-cicd`, means:
   `catalogs.auto.tfvars` map — same standing pattern as `5.1`, but workspace-scoped (plain
   default `databricks` provider) rather than account-scoped, and assumes a metastore already
   exists/is assigned rather than creating one.
+- `5.3-manage-catalog-access` — creates account-level Databricks groups (with members) via a
+  shared `modules/group` module instantiated per-group from a committed `groups.auto.tfvars` map,
+  and grants those groups privileges on catalogs/schemas (from `5.2`) via root-level
+  `databricks_grants` resources instantiated per-grant from a committed
+  `catalog_access.auto.tfvars` map. Mixes both provider scopes: groups are account-scoped (like
+  `5.1`), grants are workspace-scoped (like `5.2`). Does not grant workspace login access itself
+  — see its SKILL.md "Known gap."
 
 ## Before running anything in this group
 
