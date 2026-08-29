@@ -45,19 +45,39 @@ specific workspace. Concretely:
   passed).
 - Confirm `account.auto.tfvars` exists (from `5.1-create-workspace`'s Phase 1) —
   `databricks_account_id` is shared and reused from there, not re-gathered here.
-- **Confirm which workspace the default `databricks` provider targets**, and that it's the one
-  you actually want these catalogs in: check `databricks_profile` in `terraform.tfvars` (local)
-  and the `DATABRICKS_HOST` GitHub repo variable (CI). If it needs to change, that's a one-time
-  fix outside this skill's scope (repoint `providers.tf`'s target — e.g. via a new named
-  `databricks auth login --profile <name>` and updating `databricks_profile`/`DATABRICKS_HOST`
-  accordingly), not something this skill's `implement.sh`/`deploy.sh` do.
 - Confirm at least one workspace exists and is `RUNNING` (via `5.1-create-workspace` or
-  otherwise) — Unity Catalog needs a live workspace to attach to.
+  otherwise) — Unity Catalog needs a live workspace to attach to. Which one is asked explicitly
+  in Phase 1, not assumed here.
 
 ## Phase 1: Gather details
 
 Ask the user for these before touching any file:
 
+- **Which workspace this catalog should attach to.** List the slugs currently in
+  `databricks/infrastructure/workspaces.auto.tfvars` and ask the user to pick one via
+  `AskUserQuestion` if there's more than one; if there's exactly one, confirm it rather than
+  silently assuming. **This is a hard architectural constraint, not a formality**: Unity Catalog
+  resources use the single default `databricks` provider (see "Key difference" above), so *every*
+  catalog managed by this project currently shares whatever one workspace that provider targets
+  — there is no per-catalog workspace selection at the Terraform level yet. Concretely:
+  - Check the picked workspace's real URL: `terraform output workspace_urls` (once it's been
+    applied at least once) or the Account Console.
+  - Check what the default provider is *currently* pointed at: locally,
+    `databricks auth describe --profile <databricks_profile from terraform.tfvars>`; in CI, the
+    `DATABRICKS_HOST` repo variable.
+  - **If those don't match, stop and ask the user how to proceed** — don't silently continue
+    with a mismatched target, since the catalog would then land in the wrong workspace. Options:
+    repoint the provider now (new/updated local `databricks auth login --profile <name>` +
+    `databricks_profile` in `terraform.tfvars`, and `gh variable set DATABRICKS_HOST` for CI —
+    the same steps used to correct this project's own default provider target once already), or
+    pick a different (already-matching) workspace instead.
+  - **Known limitation, say so rather than improvising around it**: this project's Terraform can
+    target only one workspace at a time for Unity Catalog resources, because Terraform provider
+    blocks can't be generated dynamically via `for_each` the way resources can (unlike
+    `modules/workspace`, which only ever needs one shared account-level provider regardless of
+    how many workspaces exist). Catalogs across two *different* workspaces in the same Terraform
+    state would need a distinct, manually-added aliased `databricks` provider per workspace —
+    that's a real design change, not something Phase 1's conversation can paper over.
 - **A short catalog slug/name** (e.g. `analytics`) — used as the `catalogs` map key and the
   actual catalog name.
 - **Comment** (optional) describing the catalog's purpose.
@@ -149,9 +169,12 @@ recreated.
   hard-refuses without a saved `tfplan`) or via the pipeline.
 - Never guesses or silently defaults the bucket name, catalog name, or which AWS identity is
   active — always confirmed with the user in Phase 1.
-- Never guesses which workspace catalogs land in — always confirm the default provider's target
-  first (see "Before starting"); this is the one gotcha specific to this skill that `5.1` didn't
-  have to worry about.
+- Never guesses which workspace catalogs land in — always ask explicitly in Phase 1 and verify
+  it against the default provider's *actual* current target before proceeding; this is the one
+  gotcha specific to this skill that `5.1` didn't have to worry about.
+- Never treats "which workspace" as answered just because the default provider already targets
+  *some* workspace — with more than one workspace in `workspaces.auto.tfvars`, that could easily
+  be the wrong one. Ask, don't assume.
 - `implement.sh` never overwrites existing files and never writes real per-catalog values —
   those only ever go into the committed `catalogs.auto.tfvars`, directly, per Phase 1.
 - `bucket_force_destroy` defaults to `false` in each map entry — only set `true` if the user
